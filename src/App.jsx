@@ -418,11 +418,11 @@ const App = () => {
                     key={globalIndex}
                     ref={el => wordRefs.current[globalIndex] = el}
                     className={`transition-colors duration-200 font-bold ${isRead
-                        ? 'text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]'
+                        ? 'text-yellow-400'
                         : 'text-gray-900 drop-shadow-sm opacity-90'
                         } ${isCurrent ? 'text-3xl' : ''}`}
                     style={{
-                        textShadow: isRead ? '0 2px 8px rgba(0,0,0,0.9)' : '0 1px 2px rgba(255,255,255,0.8)'
+                        textShadow: isRead ? 'none' : '0 1px 2px rgba(255,255,255,0.8)'
                     }}
                 >
                     {char}
@@ -555,26 +555,6 @@ const App = () => {
                                 </div>
                             )}
 
-                            {/* Debug Info */}
-                            {debugInfo && (
-                                <div className="max-w-xs bg-blue-900/70 backdrop-blur text-white text-xs p-3 rounded-lg border border-blue-400/30 shadow-lg">
-                                    <div className="flex items-center gap-2 mb-1 text-blue-300 uppercase font-bold text-[10px]">
-                                        🔍 マッチ情報
-                                    </div>
-                                    <div className="space-y-1 font-mono text-[10px]">
-                                        <div className="flex justify-between">
-                                            <span className="text-blue-300">スコア:</span>
-                                            <span className="text-white font-bold">{debugInfo.score}</span>
-                                        </div>
-                                        {debugInfo.phrase && (
-                                            <div>
-                                                <span className="text-blue-300">マッチ箇所:</span>
-                                                <p className="text-white mt-1 break-all">{debugInfo.phrase}</p>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
                         </div>
                     )}
                 </div>
@@ -721,6 +701,17 @@ const App = () => {
                                     <ChevronDown size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                                 </div>
                             </div>
+
+                            {/* Debug Info - Subtle Display */}
+                            {debugInfo && (
+                                <>
+                                    <div className="w-px h-4 bg-white/30"></div>
+                                    <div className="flex items-center gap-2 text-[10px]">
+                                        <span className="text-gray-400">マッチ:</span>
+                                        <span className="text-white font-semibold">{debugInfo.score}</span>
+                                    </div>
+                                </>
+                            )}
 
                         </div>
                     )}
