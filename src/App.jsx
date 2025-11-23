@@ -34,6 +34,8 @@ const App = () => {
     const VISIBLE_RANGE_BEFORE = 200;
     const VISIBLE_RANGE_AFTER = 500;
 
+    const [recognitionStatus, setRecognitionStatus] = useState('inactive'); // inactive, starting, listening, error
+
     // --- Speech Recognition Setup ---
     useEffect(() => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -45,17 +47,22 @@ const App = () => {
             recognition.lang = 'ja-JP';
 
             recognition.onstart = () => {
+                console.log('音声認識が開始されました');
                 isRecognizingRef.current = true;
+                setRecognitionStatus('listening');
                 setErrorMessage(null);
             };
 
             recognition.onend = () => {
                 isRecognizingRef.current = false;
+                setRecognitionStatus('inactive');
                 if (isRecording) {
                     try {
+                        setRecognitionStatus('starting');
                         recognition.start();
                     } catch (e) {
                         console.log("Recognition auto-restart failed:", e);
+                        setRecognitionStatus('error');
                     }
                 }
             };
@@ -78,13 +85,31 @@ const App = () => {
             };
 
             recognition.onerror = (event) => {
-                if (event.error === 'no-speech') return;
+                console.error("Speech recognition error:", event.error, event);
+                setRecognitionStatus('error');
+
+                if (event.error === 'no-speech') {
+                    // 無視してOK
+                    console.log('no-speech エラーは無視します');
+                    return;
+                }
+
+                let msg = "音声認識エラーが発生しました。";
                 if (event.error === 'audio-capture') {
-                    setErrorMessage("マイク競合エラー: カメラとマイクを再起動してください。");
+                    msg = "マイク競合エラー: カメラとマイクを再起動してください。録画を一度停止してから再開してみてください。";
                     setIsRecording(false);
                 } else if (event.error === 'not-allowed') {
-                    setErrorMessage("マイク権限がありません。");
+                    msg = "マイクの使用が許可されていません。ブラウザのアドレスバーの鍵アイコンからマイクを許可してください。";
+                } else if (event.error === 'network') {
+                    msg = "ネットワークエラー: 音声認識にはインターネット接続が必要です。";
+                } else if (event.error === 'aborted') {
+                    msg = "音声認識が中断されました。";
+                } else if (event.error === 'service-not-allowed') {
+                    msg = "このブラウザでは音声認識サービスが許可されていません。HTTPSで接続されているか確認してください。";
                 }
+
+                console.log('エラーメッセージ:', msg);
+                setErrorMessage(msg);
             };
 
             recognitionRef.current = recognition;
@@ -143,34 +168,33 @@ const App = () => {
         if (!spokenText || spokenText.length < 2) return;
 
         // 無視する文字のパターン（正規化とインデックス復元で共通化）
-        // 記号、括弧、空白、改行などを網羅的に除外
         const IGNORE_CHARS_PATTERN = /[、。！？\s\n「」『』・（）()\[\]…―\-~～!?,.]/g;
 
         // ヘルパー: 文字列の類似度を計算する (Jaccard係数風の簡易版)
-        // 2つの文字列に含まれる共通文字の割合を返す
         const calculateSimilarity = (str1, str2) => {
             if (!str1 || !str2) return 0;
-            const s1 = str1.split('');
-            const s2 = str2.split('');
+            // 高速化: splitを使わず直接アクセス
             let matchCount = 0;
-            // 順序をある程度意識しつつ、文字が含まれているかチェック
             let searchIndex = 0;
-            for (let char of s1) {
-                const foundIndex = s2.indexOf(char, searchIndex);
+            const len1 = str1.length;
+            const len2 = str2.length;
+
+            for (let i = 0; i < len1; i++) {
+                const char = str1[i];
+                const foundIndex = str2.indexOf(char, searchIndex);
                 if (foundIndex !== -1) {
                     matchCount++;
-                    searchIndex = foundIndex + 1; // 文字順序を守る
+                    searchIndex = foundIndex + 1;
                 }
             }
-            // 長さに対する一致率
-            return (matchCount * 2) / (s1.length + s2.length);
+            return (matchCount * 2) / (len1 + len2);
         };
 
         // 1. 基本的な正規化
         const normalize = (str) => str.replace(IGNORE_CHARS_PATTERN, "");
         const extractKana = (str) => str.replace(/[^ぁ-んァ-ンー]/g, "");
 
-        // 直近の発話内容（少し長めに取る）
+        // 直近の発話内容
         const recentSpoken = spokenText.slice(-50);
         const cleanRecentSpoken = normalize(recentSpoken);
         const kanaRecentSpoken = extractKana(recentSpoken);
@@ -180,87 +204,104 @@ const App = () => {
         const searchEnd = Math.min(script.length, matchedIndex + 250);
         const targetScriptSlice = script.slice(searchStart, searchEnd);
 
-        // --- ロジック: スライディングウィンドウでの類似度判定 ---
-        // 台本の上を「窓」を滑らせながら、最近の発話との類似度を測る
+        // --- ロジック: ハイブリッドマッチング ---
 
         let bestMatchIndex = -1;
         let maxScore = 0;
 
-        // A. 漢字込みの通常テキストでスキャン
         const cleanTargetScript = normalize(targetScriptSlice);
 
-        // ウィンドウサイズ：5文字〜12文字
-        // これくらいの長さのフレーズが、最近の発話の中に「だいたい」含まれているかを探す
-        for (let i = 0; i < cleanTargetScript.length - 4; i++) {
-            // 短いフレーズから長いフレーズまで試す
-            const windowSizes = [5, 8, 12];
+        // A. Fast Anchor Match (爆速追従モード)
+        // 現在位置の「すぐ直後」にある短いフレーズが、発話の「末尾」にあるかチェック
+        // これにより、2-3文字話しただけで即座に反応できるようにする
+        const ANCHOR_SEARCH_RANGE = 5; // 現在地から5文字以内
 
-            for (let size of windowSizes) {
+        for (let i = 0; i < Math.min(cleanTargetScript.length, ANCHOR_SEARCH_RANGE); i++) {
+            // 短いウィンドウ (2~4文字)
+            const anchorWindows = [2, 3, 4];
+
+            for (let size of anchorWindows) {
                 if (i + size > cleanTargetScript.length) continue;
 
                 const chunk = cleanTargetScript.substr(i, size);
 
-                // 完全一致ではなく、類似度を見る
-                // 「台本のこの部分(chunk)」が「発話の末尾(cleanRecentSpoken)」に含まれているか？
-                // ただし includes ではなく類似度で
+                // 発話の「完全末尾」に近い部分に含まれているか？
+                // endsWithに近い判定だが、多少の揺れを許容するために類似度も見る
+                // ただし、短いので判定は厳しく (ほぼ完全一致が必要)
 
-                // 高速化のため、まず末尾に含まれているか単純チェック
-                // あるいは、発話の「最後の方」と比較する
+                if (cleanRecentSpoken.endsWith(chunk)) {
+                    // 完全一致で末尾にある -> 最高スコア
+                    // 即座に採用して良いレベル
+                    const score = 100; // 特大スコア
+                    if (score > maxScore) {
+                        maxScore = score;
+                        bestMatchIndex = i + size;
+                    }
+                } else {
+                    // 末尾付近にあるか検索
+                    const tailSearch = cleanRecentSpoken.slice(-10); // 発話の最後10文字
+                    const score = calculateSimilarity(chunk, tailSearch);
 
-                // ここではシンプルに「発話全体」に対して「台本チャンク」がどれくらいマッチするか見る
-                // 発話テキストが長い場合、チャンクが含まれている可能性が高い
-
-                // chunkの文字が recentSpoken にどれだけ含まれているか（順序考慮）
-                const score = calculateSimilarity(chunk, cleanRecentSpoken);
-
-                // 閾値: 80%以上一致していれば候補とする
-                // 例: "スクリプトの参照" (chunk) vs "スクリプトとの参照" (spoken) -> 高スコア
-                if (score > 0.75) {
-                    // スコアが高い、かつ 長いマッチを優先
-                    // さらに、現在地に近いほうを優先するための重み付け (iが小さいほうが良いが、マッチ長さを優先)
-                    const weightedScore = score * size;
-
-                    if (weightedScore > maxScore) {
-                        maxScore = weightedScore;
-                        bestMatchIndex = i + size; // マッチしたフレーズの「終わり」の位置
+                    if (score > 0.9) { // ほぼ一致
+                        const weightedScore = score * size * 2; // 優先度高
+                        if (weightedScore > maxScore) {
+                            maxScore = weightedScore;
+                            bestMatchIndex = i + size;
+                        }
                     }
                 }
             }
         }
 
-        // B. もし通常マッチが微妙なら、ひらがなモードで再スキャン（救済措置）
-        // 漢字の変換ミス（方 vs ほう）対策
-        if (maxScore < 4) { // 基準値低め
+        // B. 通常スキャン (リカバリー & 安定追従)
+        // Fast Anchorで見つからなかった場合、あるいはより良いマッチがあるか広い範囲で探す
+        if (maxScore < 50) { // Anchorで確定していない場合
+            for (let i = 0; i < cleanTargetScript.length - 4; i++) {
+                const windowSizes = [5, 8, 12];
+
+                for (let size of windowSizes) {
+                    if (i + size > cleanTargetScript.length) continue;
+
+                    const chunk = cleanTargetScript.substr(i, size);
+                    const score = calculateSimilarity(chunk, cleanRecentSpoken);
+
+                    if (score > 0.75) {
+                        const weightedScore = score * size;
+                        if (weightedScore > maxScore) {
+                            maxScore = weightedScore;
+                            bestMatchIndex = i + size;
+                        }
+                    }
+                }
+            }
+        }
+
+        // C. カナ救済モード (漢字変換ミス対策)
+        if (maxScore < 4) {
             const kanaTargetScript = extractKana(targetScriptSlice);
 
             for (let i = 0; i < kanaTargetScript.length - 4; i++) {
-                const size = 6; // カナの場合は少し長めで固定
+                const size = 6;
                 if (i + size > kanaTargetScript.length) continue;
                 const chunk = kanaTargetScript.substr(i, size);
                 const score = calculateSimilarity(chunk, kanaRecentSpoken);
 
                 if (score > 0.8) {
-                    const weightedScore = score * size * 0.9; // カナマッチは少し評価を下げる（誤爆防止）
+                    const weightedScore = score * size * 0.9;
                     if (weightedScore > maxScore) {
                         maxScore = weightedScore;
-                        // カナインデックスなので後でマッピングが必要だが、
-                        // ここではフラグを立てておき、後で専用のマッピングを行う
-                        bestMatchIndex = -2; // 特殊フラグ
+                        bestMatchIndex = -2;
                     }
                 }
             }
         }
 
-
         // --- 結果の適用 ---
         if (bestMatchIndex > -1) {
-            // Aパターンの適用: cleanScript上のインデックスを元のscriptに戻す
             let currentCleanIndex = 0;
             let originalIndex = searchStart;
 
             while (originalIndex < script.length) {
-                // 正規化で消える文字以外をカウント
-                // 共通のパターンを使って判定
                 if (script[originalIndex].replace(IGNORE_CHARS_PATTERN, "").length > 0) {
                     if (currentCleanIndex === bestMatchIndex) break;
                     currentCleanIndex++;
@@ -268,19 +309,11 @@ const App = () => {
                 originalIndex++;
             }
 
-            // 進む場合のみ更新
             if (originalIndex > matchedIndex) {
                 setMatchedIndex(originalIndex);
             }
         }
         else if (bestMatchIndex === -2) {
-            // Bパターン（カナ救済）の適用: カナだけで強引に進める
-            // 精度は落ちるが「止まる」よりマシ
-            // 現在地から少し進める（カナマッチの詳細位置計算は複雑なので簡易的に進める）
-            // 実際は、直近のカナを見つけてそこにジャンプするのが理想
-
-            // ここでは簡易的に「認識した長さ分」だけ検索範囲内でカナを探して進める
-            // 本来はマッピングすべきだが、UX優先で「少し進める」
             setMatchedIndex(prev => Math.min(script.length, prev + 5));
         }
     };
@@ -366,8 +399,20 @@ const App = () => {
             mediaRecorder.start();
             setIsRecording(true);
             setMatchedIndex(0);
+
+            // 音声認識を開始（少し遅延を入れて競合を避ける）
             if (recognitionRef.current && !isRecognizingRef.current) {
-                try { recognitionRef.current.start(); } catch (e) { }
+                setTimeout(() => {
+                    try {
+                        console.log('音声認識を開始します...');
+                        setRecognitionStatus('starting');
+                        recognitionRef.current.start();
+                    } catch (e) {
+                        console.error('音声認識開始エラー:', e);
+                        setErrorMessage(`音声認識エラー: ${e.message || '不明なエラー'}。マイクが他のアプリで使用されている可能性があります。`);
+                        setRecognitionStatus('error');
+                    }
+                }, 300);
             }
         } catch (err) {
             setErrorMessage("録画開始エラー");
@@ -423,8 +468,8 @@ const App = () => {
                     key={globalIndex}
                     ref={el => wordRefs.current[globalIndex] = el}
                     className={`transition-colors duration-200 ${isRead
-                            ? 'text-red-600 font-bold drop-shadow-sm'
-                            : 'text-gray-900 drop-shadow-sm opacity-90'
+                        ? 'text-red-600 font-bold drop-shadow-sm'
+                        : 'text-gray-900 drop-shadow-sm opacity-90'
                         } ${isCurrent ? 'text-3xl' : ''}`}
                     style={{
                         textShadow: isRead ? 'none' : '0 1px 2px rgba(255,255,255,0.8)'
@@ -532,6 +577,17 @@ const App = () => {
                     {cameraActive && (
                         <div className="absolute bottom-28 right-4 z-30 flex flex-col gap-2 items-end">
 
+                            {/* Status Indicator */}
+                            <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm border ${recognitionStatus === 'listening' ? 'bg-green-500/90 text-white border-green-400 animate-pulse' :
+                                recognitionStatus === 'error' ? 'bg-red-500/90 text-white border-red-400' :
+                                    'bg-gray-500/80 text-white border-gray-400'
+                                }`}>
+                                <div className={`w-1.5 h-1.5 rounded-full ${recognitionStatus === 'listening' ? 'bg-white' : 'bg-gray-300'}`}></div>
+                                {recognitionStatus === 'listening' ? 'LISTENING' :
+                                    recognitionStatus === 'error' ? 'ERROR' :
+                                        recognitionStatus === 'starting' ? 'STARTING...' : 'STANDBY'}
+                            </div>
+
                             {/* Keyboard Help */}
                             <div className="bg-black/40 backdrop-blur text-white/70 text-[10px] px-2 py-1 rounded border border-white/10 flex items-center gap-1">
                                 <Keyboard size={10} /> 矢印↓ or タップで強制送り
@@ -615,8 +671,8 @@ const App = () => {
                                 onClick={startRecording}
                                 disabled={!cameraActive}
                                 className={`flex items-center gap-3 px-8 py-4 rounded-full font-bold text-lg shadow-xl hover:shadow-2xl hover:-translate-y-1 transition-all ${cameraActive
-                                        ? 'bg-red-600 text-white hover:bg-red-700'
-                                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                    ? 'bg-red-600 text-white hover:bg-red-700'
+                                    : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                                     }`}
                             >
                                 <div className={`w-4 h-4 rounded-full ${cameraActive ? 'bg-white' : 'bg-gray-400'}`}></div>
