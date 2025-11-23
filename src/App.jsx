@@ -417,12 +417,12 @@ const App = () => {
                 <span
                     key={globalIndex}
                     ref={el => wordRefs.current[globalIndex] = el}
-                    className={`transition-colors duration-200 ${isRead
-                        ? 'text-red-600 font-bold drop-shadow-sm'
+                    className={`transition-colors duration-200 font-bold ${isRead
+                        ? 'text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]'
                         : 'text-gray-900 drop-shadow-sm opacity-90'
                         } ${isCurrent ? 'text-3xl' : ''}`}
                     style={{
-                        textShadow: isRead ? 'none' : '0 1px 2px rgba(255,255,255,0.8)'
+                        textShadow: isRead ? '0 2px 8px rgba(0,0,0,0.9)' : '0 1px 2px rgba(255,255,255,0.8)'
                     }}
                 >
                     {char}
