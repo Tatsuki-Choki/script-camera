@@ -517,7 +517,7 @@ const App = () => {
                                 WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%)'
                             }}
                         >
-                            <div className="inline-block w-full max-w-4xl bg-white/70 backdrop-blur-md px-8 py-8 rounded-2xl shadow-sm border border-white/50 pointer-events-none">
+                            <div className="inline-block w-full max-w-4xl bg-white/40 backdrop-blur-sm px-8 py-8 rounded-2xl shadow-sm border border-white/30 pointer-events-none">
                                 {renderedContent}
                             </div>
                         </div>
