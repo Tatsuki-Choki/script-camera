@@ -35,6 +35,7 @@ const App = () => {
     const VISIBLE_RANGE_AFTER = 500;
 
     const [recognitionStatus, setRecognitionStatus] = useState('inactive'); // inactive, starting, listening, error
+    const [debugInfo, setDebugInfo] = useState(null); // マッチングデバッグ情報
 
     // --- Speech Recognition Setup ---
     useEffect(() => {
@@ -162,141 +163,91 @@ const App = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [script]);
 
-    // --- Ultra-Robust Fuzzy Matching Logic ---
-    // --- Ultra-Robust Fuzzy Matching Logic ---
+    // --- Improved Smart Matching Logic ---
     const findMatchInScript = (spokenText) => {
-        if (!spokenText || spokenText.length < 2) return;
+        if (!spokenText || spokenText.length < 3) return;
 
-        // 無視する文字のパターン（正規化とインデックス復元で共通化）
+        // 無視する文字のパターン
         const IGNORE_CHARS_PATTERN = /[、。！？\s\n「」『』・（）()\[\]…―\-~～!?,.]/g;
 
-        // ヘルパー: 文字列の類似度を計算する (Jaccard係数風の簡易版)
+        // より正確な類似度計算
         const calculateSimilarity = (str1, str2) => {
             if (!str1 || !str2) return 0;
-            // 高速化: splitを使わず直接アクセス
             let matchCount = 0;
             let searchIndex = 0;
-            const len1 = str1.length;
-            const len2 = str2.length;
 
-            for (let i = 0; i < len1; i++) {
-                const char = str1[i];
-                const foundIndex = str2.indexOf(char, searchIndex);
+            for (let i = 0; i < str1.length; i++) {
+                const foundIndex = str2.indexOf(str1[i], searchIndex);
                 if (foundIndex !== -1) {
                     matchCount++;
                     searchIndex = foundIndex + 1;
                 }
             }
-            return (matchCount * 2) / (len1 + len2);
+            return (matchCount * 2) / (str1.length + str2.length);
         };
 
-        // 1. 基本的な正規化
+        // 正規化関数
         const normalize = (str) => str.replace(IGNORE_CHARS_PATTERN, "");
-        const extractKana = (str) => str.replace(/[^ぁ-んァ-ンー]/g, "");
 
-        // 直近の発話内容
-        const recentSpoken = spokenText.slice(-50);
+        // より長い発話履歴を使用（100文字）
+        const recentSpoken = spokenText.slice(-100);
         const cleanRecentSpoken = normalize(recentSpoken);
-        const kanaRecentSpoken = extractKana(recentSpoken);
 
-        // 検索範囲（現在地から先へ）
-        const searchStart = Math.max(0, matchedIndex - 5);
-        const searchEnd = Math.min(script.length, matchedIndex + 250);
+        // 検索範囲を大幅に拡大：前方100文字、後方1000文字
+        const searchStart = Math.max(0, matchedIndex - 100);
+        const searchEnd = Math.min(script.length, matchedIndex + 1000);
         const targetScriptSlice = script.slice(searchStart, searchEnd);
-
-        // --- ロジック: ハイブリッドマッチング ---
+        const cleanTargetScript = normalize(targetScriptSlice);
 
         let bestMatchIndex = -1;
         let maxScore = 0;
+        let bestMatchedPhrase = "";
 
-        const cleanTargetScript = normalize(targetScriptSlice);
+        // より長いフレーズでマッチング（10-20文字）
+        const windowSizes = [20, 15, 12, 10, 8];
 
-        // A. Fast Anchor Match (爆速追従モード)
-        // 現在位置の「すぐ直後」にある短いフレーズが、発話の「末尾」にあるかチェック
-        // これにより、2-3文字話しただけで即座に反応できるようにする
-        const ANCHOR_SEARCH_RANGE = 5; // 現在地から5文字以内
-
-        for (let i = 0; i < Math.min(cleanTargetScript.length, ANCHOR_SEARCH_RANGE); i++) {
-            // 短いウィンドウ (2~4文字)
-            const anchorWindows = [2, 3, 4];
-
-            for (let size of anchorWindows) {
-                if (i + size > cleanTargetScript.length) continue;
-
+        for (let size of windowSizes) {
+            for (let i = 0; i <= cleanTargetScript.length - size; i++) {
                 const chunk = cleanTargetScript.substr(i, size);
 
-                // 発話の「完全末尾」に近い部分に含まれているか？
-                // endsWithに近い判定だが、多少の揺れを許容するために類似度も見る
-                // ただし、短いので判定は厳しく (ほぼ完全一致が必要)
+                // 発話の末尾30文字との類似度を計算
+                const recentTail = cleanRecentSpoken.slice(-30);
+                const score = calculateSimilarity(chunk, recentTail);
 
-                if (cleanRecentSpoken.endsWith(chunk)) {
-                    // 完全一致で末尾にある -> 最高スコア
-                    // 即座に採用して良いレベル
-                    const score = 100; // 特大スコア
-                    if (score > maxScore) {
-                        maxScore = score;
-                        bestMatchIndex = i + size;
-                    }
-                } else {
-                    // 末尾付近にあるか検索
-                    const tailSearch = cleanRecentSpoken.slice(-10); // 発話の最後10文字
-                    const score = calculateSimilarity(chunk, tailSearch);
+                // 閾値を60%に下げて柔軟に
+                if (score > 0.6) {
+                    // スコアに重み付け：長いマッチほど優先、現在地に近いほうが優先
+                    const distanceFromCurrent = Math.abs(i - (matchedIndex - searchStart));
+                    const distancePenalty = distanceFromCurrent > 50 ? 0.9 : 1.0;
+                    const weightedScore = score * size * distancePenalty;
 
-                    if (score > 0.9) { // ほぼ一致
-                        const weightedScore = score * size * 2; // 優先度高
-                        if (weightedScore > maxScore) {
-                            maxScore = weightedScore;
-                            bestMatchIndex = i + size;
-                        }
-                    }
-                }
-            }
-        }
-
-        // B. 通常スキャン (リカバリー & 安定追従)
-        // Fast Anchorで見つからなかった場合、あるいはより良いマッチがあるか広い範囲で探す
-        if (maxScore < 50) { // Anchorで確定していない場合
-            for (let i = 0; i < cleanTargetScript.length - 4; i++) {
-                const windowSizes = [5, 8, 12];
-
-                for (let size of windowSizes) {
-                    if (i + size > cleanTargetScript.length) continue;
-
-                    const chunk = cleanTargetScript.substr(i, size);
-                    const score = calculateSimilarity(chunk, cleanRecentSpoken);
-
-                    if (score > 0.75) {
-                        const weightedScore = score * size;
-                        if (weightedScore > maxScore) {
-                            maxScore = weightedScore;
-                            bestMatchIndex = i + size;
-                        }
-                    }
-                }
-            }
-        }
-
-        // C. カナ救済モード (漢字変換ミス対策)
-        if (maxScore < 4) {
-            const kanaTargetScript = extractKana(targetScriptSlice);
-
-            for (let i = 0; i < kanaTargetScript.length - 4; i++) {
-                const size = 6;
-                if (i + size > kanaTargetScript.length) continue;
-                const chunk = kanaTargetScript.substr(i, size);
-                const score = calculateSimilarity(chunk, kanaRecentSpoken);
-
-                if (score > 0.8) {
-                    const weightedScore = score * size * 0.9;
                     if (weightedScore > maxScore) {
                         maxScore = weightedScore;
-                        bestMatchIndex = -2;
+                        bestMatchIndex = i + size;
+                        bestMatchedPhrase = chunk;
                     }
                 }
             }
+
+            // 良いマッチが見つかったら早期終了
+            if (maxScore > 12) break;
         }
 
-        // --- 結果の適用 ---
+        // デバッグ情報をコンソールと画面に出力
+        if (bestMatchIndex > -1) {
+            const debugData = {
+                phrase: bestMatchedPhrase,
+                score: maxScore.toFixed(2),
+                position: bestMatchIndex + searchStart,
+                spoken: cleanRecentSpoken.slice(-20)
+            };
+            console.log('マッチ検出:', debugData);
+            setDebugInfo(debugData);
+        } else {
+            setDebugInfo({ score: '0', phrase: 'マッチなし' });
+        }
+
+        // 結果の適用
         if (bestMatchIndex > -1) {
             let currentCleanIndex = 0;
             let originalIndex = searchStart;
@@ -309,12 +260,11 @@ const App = () => {
                 originalIndex++;
             }
 
-            if (originalIndex > matchedIndex) {
+            // 前方へのジャンプも許可
+            if (originalIndex !== matchedIndex) {
+                console.log('位置更新:', matchedIndex, '->', originalIndex);
                 setMatchedIndex(originalIndex);
             }
-        }
-        else if (bestMatchIndex === -2) {
-            setMatchedIndex(prev => Math.min(script.length, prev + 5));
         }
     };
 
@@ -602,6 +552,27 @@ const App = () => {
                                     <p className="line-clamp-3 opacity-90 font-mono leading-relaxed">
                                         {recognizedText.slice(-50)}
                                     </p>
+                                </div>
+                            )}
+
+                            {/* Debug Info */}
+                            {debugInfo && (
+                                <div className="max-w-xs bg-blue-900/70 backdrop-blur text-white text-xs p-3 rounded-lg border border-blue-400/30 shadow-lg">
+                                    <div className="flex items-center gap-2 mb-1 text-blue-300 uppercase font-bold text-[10px]">
+                                        🔍 マッチ情報
+                                    </div>
+                                    <div className="space-y-1 font-mono text-[10px]">
+                                        <div className="flex justify-between">
+                                            <span className="text-blue-300">スコア:</span>
+                                            <span className="text-white font-bold">{debugInfo.score}</span>
+                                        </div>
+                                        {debugInfo.phrase && (
+                                            <div>
+                                                <span className="text-blue-300">マッチ箇所:</span>
+                                                <p className="text-white mt-1 break-all">{debugInfo.phrase}</p>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             )}
                         </div>
