@@ -260,8 +260,8 @@ const App = () => {
                 originalIndex++;
             }
 
-            // 前方へのジャンプも許可
-            if (originalIndex !== matchedIndex) {
+            // 前方へのジャンプのみ許可（後方への戻りは禁止）
+            if (originalIndex > matchedIndex) {
                 console.log('位置更新:', matchedIndex, '->', originalIndex);
                 setMatchedIndex(originalIndex);
             }
